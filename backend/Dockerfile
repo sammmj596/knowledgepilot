@@ -25,4 +25,4 @@ ENV FLASK_DEBUG=0 \
 
 EXPOSE 5050
 
-CMD ["gunicorn", "-w", "2", "-b", "0.0.0.0:5050", "run:app"]
+CMD ["gunicorn", "-w", "1", "--threads", "4", "--timeout", "120", "-b", "0.0.0.0:5050", "run:app"]
