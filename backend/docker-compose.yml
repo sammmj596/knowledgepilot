@@ -1,0 +1,17 @@
+services:
+  backend:
+    build: .
+    container_name: rag-backend
+    restart: unless-stopped
+    ports:
+      - "5050:5050"
+    env_file:
+      - .env
+
+  worker:
+    build: .
+    container_name: rag-worker
+    restart: unless-stopped
+    command: ["python", "worker.py"]
+    env_file:
+      - .env

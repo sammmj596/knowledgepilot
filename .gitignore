@@ -1,0 +1,16 @@
+backend/.env
+backend/data/
+backend/__pycache__/
+backend/**/__pycache__/
+*.pyc
+.venv/
+venv/
+node_modules/
+frontend/dist/
+.DS_Store
+*.pem
+*.log
+conversations.json
+ml/
+*.log
+CLAUDE.md
