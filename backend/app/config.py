@@ -14,6 +14,8 @@ CHUNK_SIZE = int(os.environ.get("RAG_CHUNK_SIZE", "1000"))
 CHUNK_OVERLAP = int(os.environ.get("RAG_CHUNK_OVERLAP", "200"))
 RETRIEVAL_K = int(os.environ.get("RAG_RETRIEVAL_K", "4"))
 RAG_MAX_RETRIES = int(os.environ.get("RAG_MAX_RETRIES", "2"))
+SUB_QUESTION_WORKERS = int(os.environ.get("RAG_SUB_QUESTION_WORKERS", "6"))
+MAX_SUB_QUESTIONS = int(os.environ.get("RAG_MAX_SUB_QUESTIONS", "4"))
 
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY", "")
 MCP_ENABLED_TOOLS = os.environ.get("MCP_ENABLED_TOOLS", "tavily_search")

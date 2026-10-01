@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated, Any, Literal, Sequence, TypedDict
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
@@ -10,10 +11,23 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 
-from app.config import OPENAI_API_KEY, RAG_MAX_RETRIES, RETRIEVAL_K
+from app.config import (
+    MAX_SUB_QUESTIONS,
+    OPENAI_API_KEY,
+    RAG_MAX_RETRIES,
+    RETRIEVAL_K,
+    SUB_QUESTION_WORKERS,
+)
 from app.mcp_tools import get_mcp_tools, mcp_tools_available
 from app.vector_store import get_vector_store, hybrid_search
 from app.retrieval_cache import get_cached_retrieval, cache_retrieval
+
+
+# One pool per process, shared by every request thread, so total sub-question
+# concurrency stays capped no matter how many chat requests arrive at once.
+_SUB_QUESTION_POOL = ThreadPoolExecutor(
+    max_workers=SUB_QUESTION_WORKERS, thread_name_prefix="subq"
+)
 
 
 class RAGState(TypedDict):
@@ -229,11 +243,20 @@ def execute(state: RAGState) -> dict:
     if not sub_questions:
         return {"context": "", "sub_answers": []}
 
+    sub_questions = sub_questions[:MAX_SUB_QUESTIONS]
+
+    def _run(sub_q: str) -> tuple[str, str]:
+        context = _search_context(sub_q)
+        return context, _generate_sub_answer(sub_q, context)
+
+    # Sub-questions are independent and mostly wait on network I/O (OpenSearch,
+    # OpenAI), so they run concurrently. Results keep the original order.
+    futures = [_SUB_QUESTION_POOL.submit(_run, q) for q in sub_questions]
+    results = [f.result() for f in futures]
+
     sub_answers: list[str] = []
     sections: list[str] = []
-    for idx, sub_q in enumerate(sub_questions, start=1):
-        context = _search_context(sub_q)
-        answer = _generate_sub_answer(sub_q, context)
+    for idx, (sub_q, (context, answer)) in enumerate(zip(sub_questions, results), start=1):
         sub_answers.append(answer)
         sections.append(
             f"## Sub-question {idx}: {sub_q}\n\n"

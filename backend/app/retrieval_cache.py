@@ -24,6 +24,7 @@ def get_retrieval_cache_store() -> OpenSearchVectorSearch:
             http_auth=(OPENSEARCH_USER, OPENSEARCH_PASSWORD),
             use_ssl=True,
             verify_certs=True,
+            pool_maxsize=10,  # keep connections for parallel sub-question searches
             engine="faiss",
         )
     return _retrieval_cache_store
