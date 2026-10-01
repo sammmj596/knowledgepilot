@@ -2,6 +2,7 @@ import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import type { IngestionJob, UploadJobResult, VectorizeJobResult } from "./api";
 import { listIngestionJobs, uploadDocument, vectorizeJob } from "./api";
 
+const PENDING_TIMEOUT_MS = 5 * 60 * 1000;
 const ACCEPT = ".txt,.md,.markdown,.csv,.json,.html,.htm,.pdf,.docx,.log,.rst";
 
 function formatBytes(size: number): string {
@@ -21,6 +22,9 @@ export function DocumentUpload() {
   const [uploadResult, setUploadResult] = useState<UploadJobResult | null>(null);
   const [vectorizeResult, setVectorizeResult] = useState<VectorizeJobResult | null>(null);
   const [jobs, setJobs] = useState<IngestionJob[]>([]);
+  // Jobs submitted for indexing, keyed by id -> time submitted. The database keeps
+  // them as "uploaded" until the worker picks them up, so we track them here.
+  const [pending, setPending] = useState<Record<string, number>>({});
 
   const refreshJobs = useCallback(async () => {
     try {
@@ -36,17 +40,29 @@ export function DocumentUpload() {
   }, [refreshJobs]);
 
   useEffect(() => {
-  const hasPendingJob = jobs.some(
-    (job) => job.status === "queued" || job.status === "chunking"
-  );
-  if (!hasPendingJob) return;
+    const ids = Object.keys(pending);
+    const done = ids.filter((id) => {
+      const job = jobs.find((j) => j.id === id);
+      return job?.status === "chunked" || Date.now() - pending[id] > PENDING_TIMEOUT_MS;
+    });
+    if (done.length > 0) {
+      setPending((prev) => {
+        const next = { ...prev };
+        done.forEach((id) => delete next[id]);
+        return next;
+      });
+      return;
+    }
+    const hasActiveJob = jobs.some(
+      (job) => job.status === "queued" || job.status === "chunking"
+    );
+    if (ids.length === 0 && !hasActiveJob) return;
 
-  const interval = setInterval(() => {
-    void refreshJobs();
-  }, 2000);
-
-  return () => clearInterval(interval);
-}, [jobs, refreshJobs]);
+    const interval = setInterval(() => {
+      void refreshJobs();
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [pending, jobs, refreshJobs]);
 
   function pickFile(next: File | null) {
     setFile(next);
@@ -99,6 +115,7 @@ export function DocumentUpload() {
     try {
       const data = await vectorizeJob(jobId);
       setVectorizeResult(data);
+      setPending((prev) => ({ ...prev, [jobId]: Date.now() }));
       setUploadResult((prev) =>
         prev?.job_id === jobId ? { ...prev, status: data.status } : prev
       );
@@ -257,14 +274,16 @@ export function DocumentUpload() {
                 <li key={job.id} className="job-item">
                   <div className="job-item-main">
                     <span className="job-source">{job.source || job.file_path || job.id}</span>
-                    <span className={`job-status job-status-${job.status}`}>{job.status}</span>
+                    <span className={`job-status job-status-${pending[job.id] && job.status === "uploaded" ? "queued" : job.status}`}>
+                      {pending[job.id] && job.status === "uploaded" ? "queued" : job.status}
+                    </span>
                   </div>
                   <div className="job-item-meta">
                     {job.file_path && <span>{job.file_path}</span>}
                     {job.status === "chunked" && <span>{job.chunk_count} chunks</span>}
                     {job.error_message && <span className="job-error">{job.error_message}</span>}
                   </div>
-                  {job.status === "uploaded" && job.file_path && (
+                  {job.status === "uploaded" && job.file_path && !pending[job.id] && (
                     <button
                       type="button"
                       className="btn-secondary btn-small"
