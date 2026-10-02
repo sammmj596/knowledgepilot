@@ -95,6 +95,8 @@ Data: OpenSearch · MySQL (RDS) · S3 · ElastiCache (Redis)       LLM: OpenAI
 | Hybrid search (vector + BM25) | Dense search alone missed exact terms; keyword search alone misses paraphrases. |
 | Sub-questions on one shared, bounded thread pool | The work is network-bound, so threads work despite the GIL. A single pool caps concurrency no matter how many users are active. |
 | Stream only the answer-writing nodes | Showing planner or judge output would confuse users. The non-streaming endpoint stays as a fallback. |
+| Two stores: OpenSearch for retrieval, MySQL for job state | OpenSearch handles vector, keyword and cache lookups. Ingestion status needs reliable row updates and simple queries by state, which a search index handles poorly. |
+| Validate-then-refine with capped retries | A judge checks each answer against the retrieved context, so confident answers from irrelevant chunks get caught. The cap bounds latency and LLM cost. |
 
 ## Challenges
 
