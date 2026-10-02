@@ -1,6 +1,6 @@
 """
 KnowledgePilot Golden Dataset Builder
-================================
+=====================================
 
 Interactive CLI that queries your existing vector store, shows you
 candidate chunks for a question, and lets you mark which ones are actually
@@ -8,7 +8,7 @@ correct. Builds up golden_dataset.json incrementally so you can stop and
 resume any time.
 
 Usage:
-    python knowledgepilot_golden_builder.py
+    python app/golden_dataset_builder.py
 
 At each prompt:
     - Type a question and hit enter to see candidate chunks
