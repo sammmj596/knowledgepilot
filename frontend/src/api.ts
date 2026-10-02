@@ -63,6 +63,52 @@ export async function sendChat(
   return data.message;
 }
 
+export type StreamEvent =
+  | { type: "status"; text: string }
+  | { type: "token"; text: string }
+  | { type: "replace" }
+  | { type: "done"; text?: string; cached?: boolean }
+  | { type: "error"; text: string };
+
+const CHAT_STREAM_URL = "/api/chat/stream";
+
+/** Streams a chat answer as Server-Sent Events, calling onEvent for each one. */
+export async function streamChat(
+  messages: ChatMessage[],
+  onEvent: (event: StreamEvent) => void
+): Promise<void> {
+  const res = await fetch(CHAT_STREAM_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  if (!res.ok || !res.body) {
+    // Throws with the server's error message (or a generic one).
+    await parseJsonResponse<unknown>(res);
+    throw new Error("Streaming is not available");
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    // Events end with a blank line; a read can end mid-event, so keep the rest.
+    let end: number;
+    while ((end = buffer.indexOf("\n\n")) !== -1) {
+      const raw = buffer.slice(0, end);
+      buffer = buffer.slice(end + 2);
+      for (const line of raw.split("\n")) {
+        if (line.startsWith("data: ")) {
+          onEvent(JSON.parse(line.slice(6)) as StreamEvent);
+        }
+      }
+    }
+  }
+}
+
 export async function uploadDocument(
   file: File,
   options?: { source?: string }

@@ -527,3 +527,9 @@ body {
   font-size: 0.85em;
   color: #b8c9e8;
 }
+
+.stream-status {
+  padding: 0 0.25rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}

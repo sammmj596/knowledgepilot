@@ -8,7 +8,7 @@ import logging
 import time
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 from flask_cors import CORS
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -35,6 +35,106 @@ logging.basicConfig(
     ],
 )
 request_logger = logging.getLogger("knowledgepilot.requests")
+# ------------------------------------------------------------------------
+
+# --- Streaming helpers -------------------------------------------------
+# Only these graph nodes produce text the user should see. plan / validate and
+# the per-sub-question LLM calls are internal and must never be streamed.
+_ANSWER_NODES = {"generate", "merge", "refine"}
+
+# Status line shown after a node finishes (describes what happens next).
+_NEXT_STATUS = {
+    "plan": "Searching documents\u2026",
+    "execute": "Combining results\u2026",
+    "retrieve": "Writing answer\u2026",
+    "mcp_tools": "Writing answer\u2026",
+    "merge": "Checking answer\u2026",
+    "generate": "Checking answer\u2026",
+    "refine": "Checking answer\u2026",
+}
+
+
+def _sse(event: dict) -> str:
+    """Format one Server-Sent Event."""
+    return f"data: {json.dumps(event)}\n\n"
+
+
+def _chunk_text(chunk) -> str:
+    content = getattr(chunk, "content", "")
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            b.get("text", "") if isinstance(b, dict) else b
+            for b in content
+            if isinstance(b, (dict, str))
+        )
+    return ""
+
+
+def _to_lc_messages(messages_in: list) -> list:
+    out = []
+    for m in messages_in:
+        if not isinstance(m, dict):
+            continue
+        role, content = m.get("role"), m.get("content")
+        if role == "user" and isinstance(content, str):
+            out.append(HumanMessage(content=content))
+        elif role == "assistant" and isinstance(content, str):
+            out.append(AIMessage(content=content))
+    return out
+
+
+def _stream_answer(question: str, lc_messages: list):
+    """Yield SSE events for one chat request."""
+    try:
+        cached_answer = get_cached_response(question)
+        if cached_answer is not None:
+            yield _sse({"type": "done", "text": cached_answer, "cached": True})
+            return
+
+        yield _sse({"type": "status", "text": "Planning\u2026"})
+        final_text = ""
+        last_streamed_node = None
+
+        for mode, data in get_rag_app().stream(
+            initial_rag_state(lc_messages), stream_mode=["messages", "updates"]
+        ):
+            if mode == "messages":
+                chunk, meta = data
+                node = meta.get("langgraph_node")
+                if node not in _ANSWER_NODES or getattr(chunk, "tool_call_chunks", None):
+                    continue
+                text = _chunk_text(chunk)
+                if not text:
+                    continue
+                # A refine pass rewrites the answer: tell the client to start over.
+                if node == "refine" and last_streamed_node != "refine":
+                    yield _sse({"type": "replace"})
+                last_streamed_node = node
+                yield _sse({"type": "token", "text": text})
+            elif mode == "updates":
+                for node, update in (data or {}).items():
+                    if node == "mcp_tools":
+                        # Anything streamed before a tool call was only a preamble.
+                        yield _sse({"type": "replace"})
+                        last_streamed_node = None
+                    msgs = update.get("messages") if isinstance(update, dict) else None
+                    if node in _ANSWER_NODES and msgs:
+                        last = msgs[-1]
+                        if isinstance(last, AIMessage) and not last.tool_calls:
+                            final_text = (
+                                last.content if isinstance(last.content, str) else str(last.content)
+                            )
+                    if node in _NEXT_STATUS:
+                        yield _sse({"type": "status", "text": _NEXT_STATUS[node]})
+
+        if final_text:
+            cache_response(question, final_text)
+        yield _sse({"type": "done", "text": final_text})
+    except Exception as e:  # headers are already sent, so report in-band
+        yield _sse({"type": "error", "text": str(e)})
+
 # ------------------------------------------------------------------------
 
 SQS_QUEUE_URL = os.environ["SQS_QUEUE_URL"]
@@ -114,6 +214,26 @@ def create_app() -> Flask:
             cache_response(question, text)
             
         return jsonify({"message": {"role": "assistant", "content": text}})
+
+    @app.post("/api/chat/stream")
+    def chat_stream():
+        """Same pipeline as /api/chat, but streamed as Server-Sent Events."""
+        payload = request.get_json(silent=True) or {}
+        messages_in = payload.get("messages")
+        if not isinstance(messages_in, list) or not messages_in:
+            return jsonify({"error": "messages must be a non-empty list"}), 400
+        lc_messages = _to_lc_messages(messages_in)
+        if not lc_messages or not isinstance(lc_messages[-1], HumanMessage):
+            return jsonify({"error": "last message must be from user"}), 400
+
+        return Response(
+            _stream_answer(lc_messages[-1].content, lc_messages),
+            mimetype="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "X-Accel-Buffering": "no",  # tell Nginx not to buffer this response
+            },
+        )
 
     @app.post("/api/ingest/file")
     def upload_file_route():
